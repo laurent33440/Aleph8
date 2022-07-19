@@ -1,0 +1,342 @@
+*************************************
+**Compilateur PASCAL : introduction**
+*************************************
+
+Sous ensemble du langage PASCAL adapté pour le processeur aleph8.
+
+Grammaire BNF :
+===============
+key words are in minus. Id is an identificator (any alpha followed by number). Num is numerical. void is empty
+
+PROGRAM ::= 	program Id ;  BLOCK .
+BLOCK   ::=	CONSTS VARS INSTS
+CONSTS  ::=	const Id = Num ; {Id = Num; } | void
+VARS    ::=     var Id {, Id} : TYPE ; | void
+TYPE    ::=     byte
+INSTS   ::=     begin INST { ; INST } end
+INST    ::=     AFFEC | SI | TANTQUE | ECRIRE | LIRE | void
+AFFEC   ::=     Id := EXPR ;
+SI      ::=     if COND then INST 
+TANTQUE ::=     while COND do INST 
+ECRIRE  ::=     write(Id, Num)
+LIRE    ::=     read(Id, Num)
+COND    ::=     EXPR RELOP EXPR
+RELOP   ::=     = | <> | < | > | <= | >=
+EXPR    ::=     TERM { ADDOP TERM }
+ADDOP   ::=     + | -
+TERM    ::=     FACT { MULOP FACT }
+MULOP   ::=     * | /
+FACT    ::=     Id | Num | ( EXPR )
+
+Type de données supportées :
+============================
+Uniquement l'octet (byte)
+
+!!!!!!!!!!!!!!!!!
+!!Analyse Objet!!
+!!!!!!!!!!!!!!!!!
+
+Etapes de compilation :
+========================
+1)Analyse lexical : décomposition en TOKENS
+2)Analyse syntaxique : création d'une structure arborescente de TOKENS
+3)Analyse sémantique : contrôle de la conformité de la grammaire
+4)Génération de code intermédiaire : utilisation de macros instructions
+5)Optimisation du code intermédiaire
+6)Génération du code final : décomposition des macros instructions et allocation mémoire
+
+Considérations :
+===============
+La grammaire du compilateur pascal a de bonnes propriétés.
+On peut donc construire un analyseur récursif simple (sans retour arrière).
+L'idée est que chaque règle de la grammaire est associée à une fonction qui vérifie
+la concordance du texte à analyser avec une de ses parties droites.
+En conséquence, l'analyse syntaxique et sémantique peuvent être étroitements liées.
+L'algorithme de controle syntaxique et sémantique est donc directement dérivé de la grammaire.
+
+Réalisation n°1 : analyse lexical
+=================================
+Notes :
+*Les "mots" sont extraits d'un container texte.
+*L'analyse se termine à la première erreur.
+
+Le diagramme de sequence montre l'agencement des classes :
+|Erreur|<--|ParseSource|-->|TokenFactory|-->|PascalSource|
+
+Phase 1 : PascalSource
+Cette classe permet d'obtenir une ligne de texte délimté par les retour chariot
+Elle renvoie la chaine vide si elle arrive en fin de texte ou si le texte est vide
+Elle gère les numéros de lignes
+
+Phase 2 : Recherche de Tokens
+Cette classe va rechercher tous les tokens au sein du texte source.
+On utilisera un container TreeMap qui permet de garder l'ordre d'apparition des tokens
+dans le texte.
+On utilise les expressions régulières pour l'extraction des tokens.
+
+Phase 3 : gestion des erreurs
+Utilisation des exceptions (voir tests unitaires)
+
+Réalisation n°2 : analyse syntaxique et sémantique
+==================================================
+Phase 1 : analyse syntaxique
+
+L'algorithme d'analyse suit la grammaire.
+L'analyse sémantique va permettre la création des symboles
+
+Phase 2 : création des symboles
+
+On utilise un pattern de type composite.
+Les symboles sont de 3 sortes :
+    - PROGRAM : qui correspond au nom du program
+    - CONSTANTE : les constantes définies
+    - VARIABLE : les variables définies.
+Dans cette phase on ne s'occupe que de la création des symboles.
+Utilisation du pattern singleton pour la table des symboles.
+
+Phase 3 : suite de l'analyse sémantique : contrôle des constructions sémantiques
+
+    * Scénario1 : contrôle des expressions (pour l'instruction d'affectation)
+Le contrôle des expression est réalisé par une classe particulière.
+Cette classe va permettre la mise en place des symboles de l'expression :
+    - opérations (+-*/)
+    - noms (issus de la table des symboles var ou const)
+    - Valeurs (nombre de -128 à +127 ou 0 à 255)
+    REMARQUE : afin de simplifier l'étude (dans un premier temps, seuls les opérations + et - sont traitées)
+dans une pile de type FIFO (notation polonaise inverse), en effet : 
+dans l'expression 3+4-2+5 les éléments sont lus de la droite vers la gauche et donc insérés dans la pile comme ceci :
+3
+4
++
+2
+-
+5
++
+Chaque expression aura sa propre pile FIFO.
+
+    * Scénario2 : création de la pile FIFO
+On utilise un composite pattern.
+On met en place un pattern Visitor pour inspecter les symbols de la FIFO.
+
+    * Scénario3 : contrôle des conditions
+Pour contrôler les conditions on utilise le contrôle d'expressions : création d'une classe "ConditionAnalyse"
+
+Phase 4 : suite de l'analyse sémantique : création des instructions
+Utilisation du pattern Composite pour les instructions couplé au pattern Strategy en vue de la génération du code intermédiaire.
+Pour les instructions dépendantes (de if ou de while), on utilise un mécanisme d'enregistrement auprès de l'instruction "propriétaire".
+Les instruction if et while gèrent donc une liste d'instruction(s) dépendante(s).
+Conséquences : 
+    - chaque méthode d'analyse/construction d'instruction utilise un paramètre qui est soit nul soit l'instance de l'instruction "propriétaire".
+    - chaque instruction créée s'enregistre auprès de l'instruction "propriétaire" si nécessaire.
+    - les instructions dépendantes n'appartiennent donc pas à la liste principale des instructions mais à leur "propriétaire" 
+
+
+Réalisation n°3 : Génération du code intermédiaire
+==================================================
+Phase 1 : Définition du code intermédiaire 
+Le code intermédiare utilisé sera basé sur une machine à "pile"
+Les instructions icode iront chercher leurs arguments (valeurs, adresses) sur la pile.
+La pile accueille des entiers sur 8 bits.
+Le sommet de la pile accueille les résultats des opérations arithmétiques
+Les icodes supportent les variables/arguments symboliques.
+Les instructions et données partagent le même espace mémoire.
+Les instruction sont situées en mémoire "basse" (à partir de 0)
+Les données sont situées en mémoire "haute"
+Liste des icode :
+    ADD, SUB : additionne (soustrait) les deux premiers éléments de la pile. Résultat sur le sommet de pile
+    EQL : laisse 1 au sommet si les deux premiers éléments de la pile sont égaux, 0 sinon. (idem pour NEQ) 
+    LSS : Laisse 1 au sommet si le premier élément de la pile est infèrieur au second  (idem pour GTR, LEQ, GEQ)
+    LDI v : empile la valeur v
+    LDA a : empile l'adresse a
+    LDR : remplace le sommet de la pile par la valeur trouvée à l'adresse qui était en sommmet de pile
+    STO : stocke la valeur du sommet à l'adresse trouvée au sous-sommet
+    BRA label : branchement inconditionnel au label
+    BZE label : branchement au label si sommet = 0, dépile
+    HLT : stop le programme
+
+Phase2 :   instruction LET
+    * scénario1 - assignation simple : identifiant := valeur
+les icodes correspondant sont :
+    1)LDA identifiant   //empile l'adresse de l'identifiant
+    2)LDI valeur        //empile la valeur
+    3)STO               //stock la valeur à l'adresse de l'identifiant
+
+    * scénario2 - assignation avec expression : identifiant := expression
+les icodes correspondant sont :
+    1)LDA identifiant           //empile l'adresse de l'identifiant
+    2)<icodes de l'expression>  //empile la valeur
+    3)STO                       //stock la valeur à l'adresse de l'identifiant
+De manière générale : 
+    - un objet "ExpressionStackToIcode" (creationnal object) doit générer les icodes à partir de l'objet "ExpressionStack"
+    - la table des symboles fournie le nom de l'identifiant 
+Structurellement, les icodes seront placés dans un "composite pattern" (encore un).
+
+    * scénario3 - génération des icodes pour les expressions : objet "ExpressionStackToIcode"
+Le éléments de l'objet ExpressionStack ne sont pas optimisés (dans un premier temps).
+Pour l'addition (exemple) de valeurs les icodes correspondants sont :
+    1)LDI val1
+    2)LDI val2
+    3)ADD    
+Pour l'addition (exemple) de valeurs et de noms les icodes correspondants sont :
+    1)LDI val1
+    2)LDA Nom1  //Nom1 représente l'adresse symbolique de la donnée
+    3)LDR       //déréférencement
+    3)ADD      
+
+    * scénario4 - génération des icodes pour l'instruction LET
+On utilise la génération du scénario2.
+
+Phase 3 : instruction if
+    *scénario1 - génération des conditions
+Les conditions sont deux expressions reliées par un opérateur relationnel.
+La génération des expressions est réalisée, reste l'opérateur relationnel.
+Les icodes générés seront donc :
+<expression left>
+<expression right>
+<icode relationnel>
+On créé donc un objet ConditionToIcode qui utilise ConditionAnalyse et ExpressionToIcode
+
+    *scénario2 - structure de l'instruction if
+La séquence 'IF cond THEN inst' est décomposée comme suit :
+        <icode de cond>
+        IF NOT cond THEN GOTO label
+        <icode de inst>
+label   suite...
+On va donc utiliser des labels symboliques.
+Question : comment gérer les labels avec les icodes?
+Toutes les instructions icodes peuvent être associées à un label.
+On peut donc appliquer l'héritage au niveau de la gestion du label.
+Ceci oblige à changer l'interface IIcode en classe abstraite.
+
+    *scénario3 - génération des labels
+La forme des labels sera : l_if_<numero de ligne du if dans le src pascal>
+On ajoute une méthode static à SourceParser pour obtenir le n° de ligne.
+Finalement toutes les méthodes de GenerateLabel sont statiques.
+
+    *scénario4 - génération des icodes pour l'instruction if
+Pour une construction du type 'if cond then let uneVar = val;', 
+Le diagramme de séquence très partiel est le suivant :
+
+IfInstrunction          LetInstruction
+    |                       .
+    |                       .
+    |-------create--------->|
+    |                       |
+    |<---register-----------|
+    |                       |
+
+On doit donc terminer l'analyse et la création des instruction sources avant la génération des icodes.
+C'est l'objet SrcInstructionlist qui collecte et fournit la liste des icodes.
+Il faut donc modifier le comportement de l'intruction source let (phase2).
+Pour la gestion des labels : 
+Dans le cas : if uneVar1 = 10 then uneVar1 := 2; uneVar2 := 3; les Icodes correspondants sont : 
+        LDA uneVar1
+        LDR
+        LDI 10
+        EQL
+        BZE l_if_1      <---- rupture de séquence si la condition est fausse
+        LDA uneVar1     <---- début de l'instruction sous tutelle
+        LDI 2
+        STO             <---- fin de l'instruction if
+l_if_1  LDA uneVar2     <---- début de l'instruction suivant le if (elle doit récupérer le label de l'instruction if)
+        LDI 3
+        STO
+
+L'étude du diagramme de collaboration et de classes implique que la labels soient :
+    -crées par les objets de création des instructions if et while
+    -gérés par l'objet qui gére la liste des icodes.
+La procédure est donc :
+    1)création du label par l'instruction if
+    2)enregistrement du label à assigner pour le prochian icode dans l'objet "IcodeList" qui gére la liste des icodes
+    3)Lors de l'ajout d'UN icode l'objet "IcodeList" lui assigne le label s'il existe
+    3bis) Lors de l'ajout d'un autre "IcodeList" (vecteur d'icodes), l'objet "IcodeList" enregistre le label s'il existe dans le "IcodeList" inclu
+
+ *scénario5 - structure de l'instruction while & génération des icodes pour l'instruction while
+La séquence 'WHILE cond DO inst' est décomposée comme suit :
+label1  <icode de cond>
+        IF NOT cond THEN GOTO label2
+        <icode de inst>
+        goto label1
+label2  suite...
+Problème n°1 : génération de deux labels différents pour la même instruction
+On modifie la forme de génération des labels : 
+    + l<n°du label>_if_<numero de ligne du if dans le src pascal>
+    + l<n°du label>_while_<numero de ligne du while dans le src pascal>
+=> modification de la classe GenerateLabel
+
+Problème n°2 : assignation des labels pour le icodes de cond.
+Dans le cas : 'while myVar = myConst do myVar := myVar + 1 ; myVar := myConst ;' les icodes corespondants sont :
+l0_while_9	LDA	myVar
+		LDR	
+		LDA	myConst
+		LDR	
+		EQL	
+		BZE	l1_while_9
+		LDA	myVar
+		LDA	myVar
+		LDR	
+		LDI	1
+		ADD	
+		STO	
+		BRA	l0_while_9
+l1_while_9	LDA	myVar
+		LDA	myConst
+		LDR	
+		STO	
+Il faut donc pouvoir assigner le label au premier icode de la condition.
+Or les méthodes présentent dans IcodeList ne permettent que d'assigner un label au prochain icode.
+Une solution serait de créer une(des) nouvelle(s) méthode(s) pour gérer ce cas.
+Une solution plus simple est d'utiliser l'existant avec cette séquence :
+    1)Instanciation d'une IcodeList "I1" vierge . Elle contiendra les icodes de la condition avec le label
+    2)Création du label à assigner à la première instruction icode de la condition
+    3)enregistrement du label à assigner pour le prochain icode dans l'objet "I1"
+    3)Création de l'objet ConditionToIcode et extraction de la liste des icodes "I2"
+    4)Ajout de "I2" dans "I1" : "I1" contient les icodes de la condition avec le label
+
+ *scénario6 - Ajout de l'instruction icode d'arrêt.
+Afin de rester cohérent, je créé une instruction source halt qui instancie l'icode correspondant.
+
+
+Réalisation n°4 : Simulation des icodes
+=======================================
+Cette réalisation, bien qu'optionnelle, est intéressante pour mettre au point les méthodes d'optimisations du icode généré.
+J'opte pour une réalisation "quick and dirty". L'affichage sera réalisé sur la sortie standard en mode texte.
+L'objet "SimulateIcode" ne sera utilisable que pour les tests unitaires/fonctionnels au niveau des instructions sources.
+
+Réalisation n°5 : optimisation des expressions
+==============================================
+
+Réalisation n°6 : optimisation des conditions
+=============================================
+
+Réalisation n°7 : optimisation des icodes
+=========================================
+Linéarisation et canonisation des icodes
+
+Réalisation n°8 : Génération du code final
+==========================================
+Phase 1 : équivalences des architectures 
+
+Les instructions de Aleph8 sont :
+ADD Adresse     => acc = acc +(Adresse)
+JCC Label       => si Carry = 0, PC =label, sinon PC++ et Carry = 0
+NOR Adresse     => acc  = acc NON OU (Adresse)
+STA Adresse     => (Adresse) = acc
+La structure du processeur est basée sur un accumulateur.
+Equivalence structurelle des données entre les deux architectures pourrait être :
+Structure icode         <==>        Structure Aleph8
+---------------                     ----------------
+pile                                sommet de pile = acc, les sous sommets sont en mémoire
+organisation mémoire                Programme en mémoire basse, données en mémoire haute 
+
+Equivalence structurelle des icodes et des instructions Aleph8
+
+
+    
+    
+
+
+
+
+
+
